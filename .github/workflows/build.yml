@@ -1,0 +1,166 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly check for new upstream skopeo releases (Mondays at 01:00 UTC).
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: "Force-rebuild a single tag, e.g. v1.16.1 (leave empty for a normal run)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build skopeo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          APP=skopeo
+          # Upstream skopeo repository. Formerly https://github.com/containers/skopeo
+          # which was renamed to https://github.com/podman-container-tools/skopeo
+          APP_REPO="https://github.com/podman-container-tools/skopeo.git"
+
+          # Attribute automated version-bump commits to the GitHub Actions bot,
+          # not to a real person, since these commits are made by CI.
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          tags="$(git ls-remote --tags $APP_REPO | grep 'v[1-9]\.[0-9]*\.[0-9]*$' | awk -F'tags/' '{print $2}' | sort -t. -k1,1n -k2,2n -k3,3n)"
+          new_tags="$(printf "%s" "$tags" | sed -n '{/\.0$/{g;p}};h' | tail -4) $(printf "%s" "$tags" | tail -1)"
+          echo "::debug::[Tags] $new_tags"
+
+          # Optional forced rebuild of a single tag via the workflow_dispatch
+          # input. When set, only that tag is processed and the usual skip
+          # checks are bypassed (see the force handling in the loop below).
+          REBUILD="${{ github.event.inputs.rebuild }}"
+          if [ -n "$REBUILD" ]; then
+            new_tags="$REBUILD"
+            echo "::notice::Forced rebuild requested for $REBUILD"
+          fi
+
+          build_image="golang:1.25-alpine"
+          docker pull "${build_image}"
+
+          build_static() {
+            local goos="$1" goarch="$2"
+            docker run --rm -t -v "$PWD:/build" "${build_image}" sh -c \
+              "apk update && apk add gpgme btrfs-progs-dev llvm15-dev gcc musl-dev && cd /build && \
+               CGO_ENABLED=0 GO111MODULE=on GOOS=${goos} GOARCH=${goarch} go build -mod=vendor '-buildmode=pie' \
+               -ldflags '-extldflags -static' -gcflags '' \
+               -tags 'exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp' \
+               -o ./bin/skopeo-${goos}-${goarch} ./cmd/skopeo && \
+               md5sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.md5 && \
+               sha256sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.sha256"
+          }
+
+          build_darwin() {
+            local goarch="$1"
+            docker run --rm -t -v "$PWD:/build" "${build_image}" sh -c \
+              "apk update && apk add gpgme btrfs-progs-dev llvm15-dev gcc musl-dev && cd /build && \
+               CGO_ENABLED=0 GO111MODULE=on GOOS=darwin GOARCH=${goarch} go build -mod=vendor -gcflags '' \
+               -tags 'exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp' \
+               -o ./bin/skopeo-darwin-${goarch} ./cmd/skopeo && \
+               md5sum ./bin/skopeo-darwin-${goarch} > ./bin/skopeo-darwin-${goarch}.md5 && \
+               sha256sum ./bin/skopeo-darwin-${goarch} > ./bin/skopeo-darwin-${goarch}.sha256"
+          }
+
+          built=0
+          for t in $new_tags; do
+            echo "[check] $t"
+
+            # A forced rebuild (workflow_dispatch input) bypasses both skip
+            # checks and deletes any prior release for the tag first.
+            force=0
+            if [ -n "$REBUILD" ] && [ "$t" = "$REBUILD" ]; then
+              force=1
+            fi
+
+            if [ "$force" != 1 ] && [ -f version.txt ] && grep -qw "${t}" version.txt; then
+              echo "::debug::[skip] $t (already built)"
+              continue
+            fi
+
+            # If a release for this tag already exists in this repo (created
+            # out-of-band or by a previous partial run), record it and skip the
+            # rebuild instead of failing on a tag collision.
+            if [ "$force" != 1 ] && gh release view "$t" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              echo "::debug::[skip] $t (release already exists)"
+              echo "${t}" >> version.txt
+              git add version.txt
+              git commit -m "$APP $t (record existing release)"
+              built=1
+              continue
+            fi
+
+            # For a forced rebuild, delete the existing release (and its tag) so
+            # the fresh build can republish it without a collision.
+            if [ "$force" = 1 ]; then
+              gh release delete "$t" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
+            fi
+
+            echo "::group::[Build] $t"
+            rm -rf "${APP}"
+            git clone -q --depth=1 --branch "$t" --progress "$APP_REPO" "${APP}"
+            pushd "${APP}"
+
+            build_static linux amd64
+            build_static linux arm64
+            build_static linux ppc64le
+            build_darwin amd64
+            build_darwin arm64
+
+            ls -al bin/
+            cat ./bin/skopeo-{darwin,linux}-{amd64,arm64}.{md5,sha256} > ../CHECKSUMS.txt
+            cat ./bin/skopeo-linux-ppc64le.{md5,sha256} >> ../CHECKSUMS.txt
+            popd
+
+            gh release create "$t" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "$t" \
+              --notes-file ./CHECKSUMS.txt \
+              ./${APP}/bin/skopeo-linux-amd64 \
+              ./${APP}/bin/skopeo-linux-amd64.md5 \
+              ./${APP}/bin/skopeo-linux-amd64.sha256 \
+              ./${APP}/bin/skopeo-linux-arm64 \
+              ./${APP}/bin/skopeo-linux-arm64.md5 \
+              ./${APP}/bin/skopeo-linux-arm64.sha256 \
+              ./${APP}/bin/skopeo-linux-ppc64le \
+              ./${APP}/bin/skopeo-linux-ppc64le.md5 \
+              ./${APP}/bin/skopeo-linux-ppc64le.sha256 \
+              ./${APP}/bin/skopeo-darwin-amd64 \
+              ./${APP}/bin/skopeo-darwin-amd64.md5 \
+              ./${APP}/bin/skopeo-darwin-amd64.sha256 \
+              ./${APP}/bin/skopeo-darwin-arm64 \
+              ./${APP}/bin/skopeo-darwin-arm64.md5 \
+              ./${APP}/bin/skopeo-darwin-arm64.sha256
+
+            # Record the tag if not already tracked (a forced rebuild of an
+            # already-tracked tag leaves version.txt unchanged).
+            if ! { [ -f version.txt ] && grep -qw "${t}" version.txt; }; then
+              echo "${t}" >> version.txt
+              git add version.txt
+              git commit -m "$APP $t (GitHub Actions automatically built on $(date +"%Y-%m-%d %H:%M"))"
+            fi
+            built=1
+            echo "::endgroup::"
+          done
+
+          # Push all version.txt bumps at once. Pushes made with GITHUB_TOKEN do
+          # not trigger another workflow run, so this will not cause a loop.
+          if [ "$built" = "1" ]; then
+            git push
+          fi
