@@ -4,10 +4,8 @@
 
 Statically linked [skopeo](https://github.com/podman-container-tools/skopeo) binaries,
 built from the official upstream source in GitHub Actions and published as
-releases. This repository exists so that trusted, self-built skopeo binaries
-can be consumed by the
-[skopeo-mise-tool](https://github.com/norrs/skopeo-mise-tool) mise plugin,
-instead of trusting arbitrary third-party binaries.
+releases. These binaries are consumed by the
+[skopeo-mise-tool](https://github.com/norrs/skopeo-mise-tool) mise plugin.
 
 Release tags mirror the upstream skopeo release versions.
 
