@@ -64,10 +64,15 @@ jobs:
 
           build_static() {
             local goos="$1" goarch="$2"
+            # With CGO_ENABLED=0 the Go internal linker produces the binary. Do
+            # NOT use -buildmode=pie here: a CGO-less PIE is still dynamically
+            # linked and references an ELF interpreter (in alpine, the musl
+            # loader /lib/ld-musl-x86_64.so.1), so it fails to exec on glibc
+            # hosts with "No such file or directory". A plain CGO_ENABLED=0
+            # build yields a fully static, interpreter-free executable.
             docker run --rm -t -v "$PWD:/build" "${build_image}" sh -c \
               "apk update && apk add gpgme btrfs-progs-dev llvm15-dev gcc musl-dev && cd /build && \
-               CGO_ENABLED=0 GO111MODULE=on GOOS=${goos} GOARCH=${goarch} go build -mod=vendor '-buildmode=pie' \
-               -ldflags '-extldflags -static' -gcflags '' \
+               CGO_ENABLED=0 GO111MODULE=on GOOS=${goos} GOARCH=${goarch} go build -mod=vendor -gcflags '' \
                -tags 'exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp' \
                -o ./bin/skopeo-${goos}-${goarch} ./cmd/skopeo && \
                md5sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.md5 && \
