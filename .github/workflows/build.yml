@@ -55,6 +55,13 @@ jobs:
           build_image="golang:1.25-alpine"
           docker pull "${build_image}"
 
+          # The build container runs as root and writes into the bind-mounted
+          # checkout, so its output is root-owned on the host. Pass the runner's
+          # UID/GID into the container and chown the artifacts back afterwards so
+          # the non-root runner can later "rm -rf" the checkout without failing.
+          HOST_UID="$(id -u)"
+          HOST_GID="$(id -g)"
+
           build_static() {
             local goos="$1" goarch="$2"
             docker run --rm -t -v "$PWD:/build" "${build_image}" sh -c \
@@ -64,7 +71,8 @@ jobs:
                -tags 'exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp' \
                -o ./bin/skopeo-${goos}-${goarch} ./cmd/skopeo && \
                md5sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.md5 && \
-               sha256sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.sha256"
+               sha256sum ./bin/skopeo-${goos}-${goarch} > ./bin/skopeo-${goos}-${goarch}.sha256 && \
+               chown -R ${HOST_UID}:${HOST_GID} ./bin"
           }
 
           build_darwin() {
@@ -75,7 +83,8 @@ jobs:
                -tags 'exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp' \
                -o ./bin/skopeo-darwin-${goarch} ./cmd/skopeo && \
                md5sum ./bin/skopeo-darwin-${goarch} > ./bin/skopeo-darwin-${goarch}.md5 && \
-               sha256sum ./bin/skopeo-darwin-${goarch} > ./bin/skopeo-darwin-${goarch}.sha256"
+               sha256sum ./bin/skopeo-darwin-${goarch} > ./bin/skopeo-darwin-${goarch}.sha256 && \
+               chown -R ${HOST_UID}:${HOST_GID} ./bin"
           }
 
           built=0
