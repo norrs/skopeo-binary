@@ -1,3 +1,4 @@
+# Based on the original work in https://github.com/lework/skopeo-binary by @lework.
 name: Build
 
 on:

@@ -68,6 +68,14 @@ Or from the GitHub UI: **Actions → Build → Run workflow**, then enter the ta
 (e.g. `v1.16.1`) in the **rebuild** field. Leave the field empty for a normal
 run.
 
+## Credits
+
+The build tooling in this repository is based on
+[lework/skopeo-binary](https://github.com/lework/skopeo-binary), which pioneered
+the GitHub Actions workflow for building and publishing statically linked skopeo
+binaries. Many thanks to [@lework](https://github.com/lework) for the original
+work.
+
 ## License
 
 The build tooling in this repository is licensed under [MIT](LICENSE). skopeo
